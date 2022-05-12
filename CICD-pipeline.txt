@@ -1,0 +1,112 @@
+pipeline {
+    agent any
+     tools { 
+        maven 'Apache Maven 3.6.3' 
+    }
+   
+    environment {
+        NEXUS_VERSION = "nexus3"
+        NEXUS_PROTOCOL = "http"
+        NEXUS_URL = "3.8.191.135:8081"
+        NEXUS_REPOSITORY = "maven-nexus-repo"
+        NEXUS_CREDENTIAL_ID = "nexus-user-credentials"
+    }
+    stages {
+        stage("Clone code from git") {
+            steps {
+                script {
+                    git 'https://github.com/javaee/cargotracker.git';
+                }
+            }
+        }
+        stage("Maven Build") {
+            steps {
+                script {
+                    sh "mvn -version"
+                    sh "mvn package -DskipTests=true"
+                }
+            }
+        }
+        
+       stage ('Code Quality scan')  {
+           steps {
+              withSonarQubeEnv('SonarQube') {
+              sh "/opt/maven/bin/mvn sonar:sonar -Dsonar.login=admin -Dsonar.password=admin123 -f pom.xml sonar:sonar" //username and passwd should be some variables or call from credentials
+            }
+           }
+        }
+        
+         
+        stage ('Code coverage')  {
+            steps {
+             jacoco()
+            }
+        }
+        stage("Publish to Nexus Repository Manager") {
+            steps {
+                script {
+                    pom = readMavenPom file: "pom.xml";
+                    filesByGlob = findFiles(glob: "target/*.${pom.packaging}");
+                    echo "${filesByGlob[0].name} ${filesByGlob[0].path} ${filesByGlob[0].directory} ${filesByGlob[0].length} ${filesByGlob[0].lastModified}"
+                    artifactPath = filesByGlob[0].path;
+                    artifactExists = fileExists artifactPath;
+                    if(artifactExists) {
+                        echo "*** File: ${artifactPath}, group: ${pom.groupId}, packaging: ${pom.packaging}, version ${pom.version}";
+                        nexusArtifactUploader(
+                            nexusVersion: NEXUS_VERSION,
+                            protocol: NEXUS_PROTOCOL,
+                            nexusUrl: NEXUS_URL,
+                            groupId: pom.groupId,
+                            version: pom.version,
+                            repository: NEXUS_REPOSITORY,
+                            credentialsId: NEXUS_CREDENTIAL_ID,
+                            artifacts: [
+                                [artifactId: pom.artifactId,
+                                classifier: '',
+                                file: artifactPath,
+                                type: pom.packaging],
+                                [artifactId: pom.artifactId,
+                                classifier: '',
+                                file: "pom.xml",
+                                type: "pom"]
+                            ]
+                        );
+                    } else {
+                        error "*** File: ${artifactPath}, could not be found";
+                    }
+                }
+            }
+        }
+	stage ('Download artifact from nexus')  {
+			steps {
+				echo "download to DEV Env "
+				sh “curl -u admin:admin123 -X GET http://3.8.191.135:8081/service/rest/v1/components?repository=maven-nexus-repo&group=Dashboard&name=cargo-tracker&version=1.0&p=war”
+           }
+        }
+
+	stage ('DEV Deploy')  {
+			steps {
+				echo "deploying to DEV Env "
+				deploy adapters: [tomcat8(credentialsId: 'tomcat-integration', path: '', url: 'http://3.8.191.135:8090')], contextPath: null, war: '**/*.war'
+           }
+        }
+stage ('Deploy To Stage') {
+         input{
+          message "Do you want to proceed for stage deployment?"
+        }
+		steps {
+                sh 'echo "Deploy into Stage"'
+
+              }
+        }
+		stage ('Deploy To Prod') {
+         input{
+          message "Do you want to proceed for Production deployment?"
+        }
+		steps {
+                sh 'echo "Deploy into Production"'
+
+              }
+        }
+    }
+}
